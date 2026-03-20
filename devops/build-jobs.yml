@@ -19,32 +19,39 @@ jobs:
           customCommand: |
             install -g pnpm
           
-      - bash: |
-          pnpm install --frozen-lockfile
-        displayName: "PNPM Install"
-        failOnStderr: true
+      - task: Npm@1
+        displayName: "NPM Install"
+        inputs:
+          command: ci
+          verbose: true   
 
-      - bash: |
-          pnpm --filter ${{ parameters.package }} run test
-        displayName: "Run unit tests"
-        failOnStderr: false
+      - task: Npm@1
+        displayName: "Lint"
+        inputs:
+          command: custom
+          customCommand: "run lint"
+          verbose: true           
 
-      - bash: |
-          pnpm --filter ${{ parameters.package }} run lint
-        displayName: "Linting"
-        failOnStderr: true
+      - task: Npm@1
+        displayName: "Run Unit Tests"
+        inputs:
+          command: custom
+          customCommand: "run test:silent"          
+          verbose: true
 
-      - bash: |
-          cd ${{ parameters.package }}
-          pnpm version $(Build.BuildNumber) --no-git-tag-version
+      - task: Npm@1
         displayName: "Set Build Number"
-        condition: and(succeeded(), ${{ eq(parameters.isPr, false) }})
-        failOnStderr: true
+        inputs:
+          command: custom
+          customCommand: "version $(Build.BuildNumber) --no-git-tag-version"          
+          verbose: true
 
-      - bash: |
-          pnpm --filter ${{ parameters.package }} run build
-        displayName: "Build"
-        failOnStderr: true
+      - task: Npm@1
+        displayName: "NPM Build"
+        inputs:
+          command: custom
+          customCommand: "run build"          
+          verbose: true
 
       - bash: |
           cp ./staticwebapp.config.json ./${{ parameters.package }}/dist/staticwebapp.config.json

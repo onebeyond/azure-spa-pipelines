@@ -1,0 +1,7 @@
+{
+    "scripts": {    
+        "build": "vite build && tsc",        
+        "test:silent": "vitest run --silent",    
+        "lint": "eslint"    
+    }
+}

@@ -12,9 +12,17 @@ variable "web_ui_sku_size" {
   description = "SKU for Static UI."
 }
 
+variable "has_custom_domain"{
+  type        = bool
+  description = "set to true if you have a custom domain"
+  nullable    = false
+  default     = false
+}
+
 variable "web_ui_url" {
   type        = string
-  description = "URL of UI - unfortunate bootstrap problem"
+  description = "URL of UI - unfortunate bootstrap problem - required if has_custom_domain is true"
+  nullable    = true
 }
 
 variable "subscription_id" {

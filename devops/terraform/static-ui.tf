@@ -22,7 +22,7 @@ resource "azurerm_static_web_app" "ui" {
 }
 
 resource "azurerm_static_web_app_custom_domain" "domain" {
-  count = local.stage_code == "prod" ? 1 : 0
+  count = var.has_custom_domain ? 1 : 0
   domain_name = var.web_ui_url
   static_web_app_id = azurerm_static_web_app.ui.id
   validation_type = "cname-delegation"
