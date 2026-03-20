@@ -8,15 +8,6 @@ variables:
   minor: 0
 
 stages:
-  - stage: Build_Portal
-    displayName: "Build Portal"
-    dependsOn: []
-    jobs:
-      - template: 'build-jobs.yml'
-        parameters:
-          package: portal
-          isPr: true
-
   - stage: Build_Client
     displayName: "Build client"
     dependsOn: []

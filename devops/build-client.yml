@@ -6,8 +6,7 @@ trigger:
     - hotfix/*
   paths:
     include:
-    - client/*
-    - packages/*
+    - src/*
     - devops/*
 
 pr: none
@@ -59,4 +58,4 @@ stages:
     jobs:
       - template: 'build-jobs.yml'
         parameters:
-          package: client
+          package: SPA

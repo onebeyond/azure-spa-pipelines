@@ -9,12 +9,14 @@ variables:
   - name: devOpsServiceConnection
     value: "SPA Deployment" # As it stands in Azure DevOps
   - name: projectCode
+    value: "spa-project"
+  - name: projectName
     value: "SPA Project"
 
 resources:
   pipelines:
     - pipeline: build
-      source: "$(projectCode) UI Client Build"
+      source: "$(projectName) UI Client Build"
       trigger:
         branches:
           include:
@@ -83,7 +85,7 @@ stages:
                 -var-file=terraform.qa.tfvars
                 -out=terraform.tfplan
                 -input=false
-                -var="application_name=client"
+                -var="application_name=$(projectCode)"
 
           - task: ArchiveFiles@2
             displayName: "Archive TF Plan"
@@ -99,7 +101,7 @@ stages:
       - deployment:
         displayName: "Deploy to QA"
         dependsOn: [Build_TF_Plan]        
-        environment: "$(projectCode) Client QA"
+        environment: "$(projectName) Client QA"
         variables:
           tf.workingDirectory: "$(Pipeline.Workspace)/build/TF-Files"
           spa.workingDirectory: "$(Pipeline.Workspace)/WebUISpa"
@@ -148,7 +150,7 @@ stages:
                 - task: ExtractFiles@1
                   displayName: "Extract Web UI SPA"
                   inputs:
-                    archiveFilePatterns: "$(Pipeline.Workspace)/build/WebUI-client/*.zip"
+                    archiveFilePatterns: "$(Pipeline.Workspace)/build/WebUI-SPA/*.zip"
                     destinationFolder: "$(spa.workingDirectory)"
 
                 - bash: |
@@ -236,7 +238,7 @@ stages:
                 -var-file=terraform.uat.tfvars
                 -out=terraform.tfplan
                 -input=false
-                -var="application_name=client"
+                -var="application_name=$(projectCode)"
 
           - task: ArchiveFiles@2
             displayName: "Archive TF Plan"
@@ -265,7 +267,7 @@ stages:
       - deployment:
         displayName: "Deploy to UAT"
         dependsOn: [Confirm_TF_Plan_UAT]        
-        environment: "$(projectCode) Client UAT"
+        environment: "$(projectName) Client UAT"
         variables:
           tf.workingDirectory: "$(Pipeline.Workspace)/build/TF-Files"
           spa.workingDirectory: "$(Pipeline.Workspace)/WebUISpa"
@@ -314,7 +316,7 @@ stages:
                 - task: ExtractFiles@1
                   displayName: "Extract Web UI SPA"
                   inputs:
-                    archiveFilePatterns: "$(Pipeline.Workspace)/build/WebUI-client/*.zip"
+                    archiveFilePatterns: "$(Pipeline.Workspace)/build/WebUI-SPA/*.zip"
                     destinationFolder: "$(spa.workingDirectory)"
 
                 - bash: |
