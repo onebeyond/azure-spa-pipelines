@@ -1,0 +1,1 @@
+web_ui_url = "https://ashy-pond-012313203.1.azurestaticapps.net"

@@ -1,0 +1,1 @@
+web_ui_url = "https://nice-bay-08d2acf03.4.azurestaticapps.net"

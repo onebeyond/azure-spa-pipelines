@@ -1,0 +1,6 @@
+{
+  "appSettings": {
+    "apiUrl": "<Please override - no trailing slash>",    
+    "environment": "Development"    
+  }
+}

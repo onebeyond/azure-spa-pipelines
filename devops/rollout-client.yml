@@ -1,0 +1,350 @@
+trigger: none
+
+pr: none
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  - name: devOpsServiceConnection
+    value: "SPA Deployment" # As it stands in Azure DevOps
+  - name: projectCode
+    value: "SPA Project"
+
+resources:
+  pipelines:
+    - pipeline: build
+      source: "$(projectCode) UI Client Build"
+      trigger:
+        branches:
+          include:
+            - main
+
+stages:
+  - stage: Set_Deploy_Number
+    displayName: "Set Deploy Number"
+    jobs:
+      - job:
+        steps:
+          - checkout: none
+          - bash: |
+              echo "##vso[build.updatebuildnumber]$(resources.pipeline.build.runName)"
+            displayName: "Set Deployment Number"
+
+  - stage: Deploy_To_QA
+    displayName: "QA"
+    dependsOn: [Set_Deploy_Number]
+    jobs:
+      - job: Build_TF_Plan
+        displayName: "Build QA TF Plan"
+        variables:
+          tf.workingDirectory: "$(Pipeline.Workspace)/build/TF-Files"
+          spa.workingDirectory: "$(Pipeline.Workspace)/WebUISpa"
+        steps:
+          - checkout: none
+
+          - download: build
+            displayName: "Download TF Files"
+            artifact: "TF-Files"
+
+          - task: TerraformInstaller@0
+            displayName: 'Install TF'
+
+          - task: TerraformTaskV3@3
+            displayName: 'Initialize TF'
+            inputs:
+              workingDirectory: "$(tf.workingDirectory)"
+              backendServiceArm: "$(devOpsServiceConnection)"
+              backendAzureRmResourceGroupName: "spa-infra-rg
+              backendAzureRmStorageAccountName: "spainfrastorage"
+              backendAzureRmContainerName: 'spa-infra'
+              backendAzureRmKey: 'spa-infra-qa.tfstate'
+
+          - bash: |
+              if [ $(terraform workspace list | grep -c "qa") -eq 0 ] ; then
+                echo "Creating new workspace qa"
+                terraform workspace new "qa" -no-color
+              else
+                echo "Switching to existing workspace qa"
+                terraform workspace select "qa" -no-color
+              fi
+            displayName: 'Select TF Workspace'
+            workingDirectory: "$(tf.workingDirectory)"
+
+          - task: TerraformTaskV3@3
+            name: Terraform_Plan
+            displayName: 'Build TF Plan'
+            inputs:
+              workingDirectory: "$(tf.workingDirectory)"
+              environmentServiceNameAzureRM: "$(devOpsServiceConnection)"
+              command: plan
+              commandOptions: >
+                -var-file=terraform.tfvars
+                -var-file=terraform.qa.tfvars
+                -out=terraform.tfplan
+                -input=false
+                -var="application_name=client"
+
+          - task: ArchiveFiles@2
+            displayName: "Archive TF Plan"
+            inputs:
+              includeRootFolder: false
+              rootFolderOrFile: "$(tf.workingDirectory)"
+              archiveFile: "$(tf.workingDirectory)/TF-Plan-qa.zip"
+
+          - publish: "$(tf.workingDirectory)/TF-Plan-qa.zip"
+            displayName: "Publish TF Plan"
+            artifact: "TF-Plan-qa-$(System.StageAttempt)"  
+
+      - deployment:
+        displayName: "Deploy to QA"
+        dependsOn: [Build_TF_Plan]        
+        environment: "$(projectCode) Client QA"
+        variables:
+          tf.workingDirectory: "$(Pipeline.Workspace)/build/TF-Files"
+          spa.workingDirectory: "$(Pipeline.Workspace)/WebUISpa"
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - download: current
+                  displayName: "Download Pipeline Artifacts"
+
+                - download: build
+                  displayName: "Download Build Artifacts"
+
+                - task: ExtractFiles@1
+                  displayName: "Extract TF Plan"
+                  inputs:
+                    archiveFilePatterns: "$(Pipeline.Workspace)/TF-Plan-qa-$(System.StageAttempt)/TF-Plan-qa.zip"
+                    destinationFolder: "$(tf.workingDirectory)"
+
+                - task: TerraformInstaller@0
+                  displayName: "Install TF"
+
+                - task: TerraformTaskV3@3
+                  displayName: "Apply TF Plan"
+                  env:
+                    TF_LOG: DEBUG
+                  inputs:
+                    workingDirectory: "$(tf.workingDirectory)"
+                    environmentServiceNameAzureRM: "$(devOpsServiceConnection)"
+                    command: apply
+                    commandOptions: >
+                      -input=false
+                      -lock=false
+                      terraform.tfplan                      
+
+                - task: TerraformTaskV3@3
+                  displayName: 'Generate TF Outputs'
+                  name: terraform_output_prev
+                  inputs:
+                    workingDirectory: "$(tf.workingDirectory)"
+                    environmentServiceNameAzureRM: "$(devOpsServiceConnection)"
+                    command: output
+                    commandOptions: -json
+                    outputTo: 'file'
+
+                - task: ExtractFiles@1
+                  displayName: "Extract Web UI SPA"
+                  inputs:
+                    archiveFilePatterns: "$(Pipeline.Workspace)/build/WebUI-client/*.zip"
+                    destinationFolder: "$(spa.workingDirectory)"
+
+                - bash: |
+                    set -euo pipefail
+                
+                    echo "File path: $TF_OUTPUT_FILE_PATH"
+
+                    jq -r '
+                    . as $in
+                    | keys[]
+                    | ($in[.].value | @text) as $value
+                    | ($in[.].sensitive // false) as $sensitive
+                    | "##vso[task.setvariable variable=\(.);isoutput=true;issecret=\($sensitive)]\($value)"
+                    ' "$TF_OUTPUT_FILE_PATH"
+                  displayName: 'Set Pipeline Variables from Outputs'
+                  name: Terraform_Output  # Task name to reference outputs later
+                  env:
+                    TF_OUTPUT_FILE_PATH: "$(terraform_output_prev.jsonOutputVariablesPath)"
+
+                - bash: |
+                    ls $(spa.workingDirectory)
+                    sed -i 's/\/\*\* @preserve ENVIRONMENT_SETUP_PLACEHOLDER \*\//window.env = '\'qa\''/g' $(spa.workingDirectory)/*.html
+                  displayName: "Set up Web UI SPA Runtime Environment"
+
+                - task: AzureStaticWebApp@0
+                  inputs:
+                    workingDirectory: "$(spa.workingDirectory)"
+                    app_location: "/"
+                    output_location: ""
+                    api_location: ""
+                    skip_app_build: true
+                    skip_api_build: true
+                    azure_static_web_apps_api_token: "$(Terraform_Output.static_ui_deployment_token)"
+
+
+  - stage: Deploy_To_UAT
+    displayName: "UAT"
+    dependsOn: [Deploy_To_QA]
+    jobs:
+      - job: Build_TF_Plan
+        displayName: "Build UAT TF Plan"
+        variables:
+          tf.workingDirectory: "$(Pipeline.Workspace)/build/TF-Files"
+          spa.workingDirectory: "$(Pipeline.Workspace)/WebUISpa"
+        steps:
+          - checkout: none
+
+          - download: build
+            displayName: "Download TF Files"
+            artifact: "TF-Files"
+
+          - task: TerraformInstaller@0
+            displayName: 'Install TF'
+
+          - task: TerraformTaskV3@3
+            displayName: 'Initialize TF'
+            inputs:
+              workingDirectory: "$(tf.workingDirectory)"
+              backendServiceArm: "$(devOpsServiceConnection)"
+              backendAzureRmResourceGroupName: "spa-infra-rg"
+              backendAzureRmStorageAccountName: "spainfrastorage"
+              backendAzureRmContainerName: 'spa-infra'
+              backendAzureRmKey: 'spa-infra-uat.tfstate'
+
+          - bash: |
+              if [ $(terraform workspace list | grep -c "uat") -eq 0 ] ; then
+                echo "Creating new workspace uat"
+                terraform workspace new "uat" -no-color
+              else
+                echo "Switching to existing workspace uat"
+                terraform workspace select "uat" -no-color
+              fi
+            displayName: 'Select TF Workspace'
+            workingDirectory: "$(tf.workingDirectory)"
+
+          - task: TerraformTaskV3@3
+            name: Terraform_Plan
+            displayName: 'Build TF Plan'
+            inputs:
+              workingDirectory: "$(tf.workingDirectory)"
+              environmentServiceNameAzureRM: "$(devOpsServiceConnection)"
+              command: plan
+              commandOptions: >
+                -var-file=terraform.tfvars
+                -var-file=terraform.uat.tfvars
+                -out=terraform.tfplan
+                -input=false
+                -var="application_name=client"
+
+          - task: ArchiveFiles@2
+            displayName: "Archive TF Plan"
+            inputs:
+              includeRootFolder: false
+              rootFolderOrFile: "$(tf.workingDirectory)"
+              archiveFile: "$(tf.workingDirectory)/TF-Plan-uat.zip"
+
+          - publish: "$(tf.workingDirectory)/TF-Plan-uat.zip"
+            displayName: "Publish TF Plan"
+            artifact: "TF-Plan-uat-$(System.StageAttempt)"  
+
+      - job: Confirm_TF_Plan_UAT
+        displayName: "Confirm UAT TF Plan"
+        dependsOn: [Build_TF_Plan]
+        variables:
+          tfPlanHasChanges: $[dependencies.Build_TF_Plan.outputs['Terraform_Plan.changesPresent']]
+        pool: server
+        steps: 
+          - task: ManualValidation@0
+            displayName: "Confirm UAT TF Plan"
+            condition: and(succeeded(), eq(variables.tfPlanHasChanges, true))
+            inputs:
+              instructions: "Please check and confirm UAT TF Plan"
+
+      - deployment:
+        displayName: "Deploy to UAT"
+        dependsOn: [Confirm_TF_Plan_UAT]        
+        environment: "$(projectCode) Client UAT"
+        variables:
+          tf.workingDirectory: "$(Pipeline.Workspace)/build/TF-Files"
+          spa.workingDirectory: "$(Pipeline.Workspace)/WebUISpa"
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - download: current
+                  displayName: "Download Pipeline Artifacts"
+
+                - download: build
+                  displayName: "Download Build Artifacts"
+
+                - task: ExtractFiles@1
+                  displayName: "Extract TF Plan"
+                  inputs:
+                    archiveFilePatterns: "$(Pipeline.Workspace)/TF-Plan-uat-$(System.StageAttempt)/TF-Plan-uat.zip"
+                    destinationFolder: "$(tf.workingDirectory)"
+
+                - task: TerraformInstaller@0
+                  displayName: "Install TF"
+
+                - task: TerraformTaskV3@3
+                  displayName: "Apply TF Plan"
+                  env:
+                    TF_LOG: DEBUG
+                  inputs:
+                    workingDirectory: "$(tf.workingDirectory)"
+                    environmentServiceNameAzureRM: "$(devOpsServiceConnection)"
+                    command: apply
+                    commandOptions: >
+                      -input=false
+                      -lock=false
+                      terraform.tfplan
+
+                - task: TerraformTaskV3@3
+                  displayName: 'Generate TF Outputs'
+                  name: terraform_output_prev
+                  inputs:
+                    workingDirectory: "$(tf.workingDirectory)"
+                    environmentServiceNameAzureRM: "$(devOpsServiceConnection)"
+                    command: output
+                    commandOptions: -json
+                    outputTo: 'file'
+
+                - task: ExtractFiles@1
+                  displayName: "Extract Web UI SPA"
+                  inputs:
+                    archiveFilePatterns: "$(Pipeline.Workspace)/build/WebUI-client/*.zip"
+                    destinationFolder: "$(spa.workingDirectory)"
+
+                - bash: |
+                    set -euo pipefail
+                
+                    echo "File path: $TF_OUTPUT_FILE_PATH"
+
+                    jq -r '
+                    . as $in
+                    | keys[]
+                    | ($in[.].value | @text) as $value
+                    | ($in[.].sensitive // false) as $sensitive
+                    | "##vso[task.setvariable variable=\(.);isoutput=true;issecret=\($sensitive)]\($value)"
+                    ' "$TF_OUTPUT_FILE_PATH"
+                  displayName: 'Set Pipeline Variables from Outputs'
+                  name: Terraform_Output  # Task name to reference outputs later
+                  env:
+                    TF_OUTPUT_FILE_PATH: "$(terraform_output_prev.jsonOutputVariablesPath)"
+
+                - bash: |
+                    ls $(spa.workingDirectory)
+                    sed -i 's/\/\*\* @preserve ENVIRONMENT_SETUP_PLACEHOLDER \*\//window.env = '\'uat\''/g' $(spa.workingDirectory)/*.html
+                  displayName: "Set up Web UI SPA Runtime Environment"
+
+                - task: AzureStaticWebApp@0
+                  inputs:
+                    workingDirectory: "$(spa.workingDirectory)"
+                    app_location: "/"
+                    output_location: ""
+                    api_location: ""
+                    skip_app_build: true
+                    skip_api_build: true
+                    azure_static_web_apps_api_token: "$(Terraform_Output.static_ui_deployment_token)"

@@ -1,0 +1,77 @@
+parameters:
+  package: ''
+  isPr: false
+
+jobs:
+  - job: Build_Publish_UI
+    displayName: '${{ parameters.package }} Build'
+
+    steps:
+      - task: UseNode@1
+        displayName: NVM Use
+        inputs:
+          version: 24.11.1
+
+      - task: NPM@1
+        displayName: "Install PNPM"
+        inputs:
+          command: custom
+          customCommand: |
+            install -g pnpm
+          
+      - bash: |
+          pnpm install --frozen-lockfile
+        displayName: "PNPM Install"
+        failOnStderr: true
+
+      - bash: |
+          pnpm --filter ${{ parameters.package }} run test
+        displayName: "Run unit tests"
+        failOnStderr: false
+
+      - bash: |
+          pnpm --filter ${{ parameters.package }} run lint
+        displayName: "Linting"
+        failOnStderr: true
+
+      - bash: |
+          cd ${{ parameters.package }}
+          pnpm version $(Build.BuildNumber) --no-git-tag-version
+        displayName: "Set Build Number"
+        condition: and(succeeded(), ${{ eq(parameters.isPr, false) }})
+        failOnStderr: true
+
+      - bash: |
+          pnpm --filter ${{ parameters.package }} run build
+        displayName: "Build"
+        failOnStderr: true
+
+      - bash: |
+          cp ./staticwebapp.config.json ./${{ parameters.package }}/dist/staticwebapp.config.json
+        displayName: "Copy Static WebApp Config"
+        condition: and(succeeded(), ${{ eq(parameters.isPr, false) }})
+        failOnStderr: true
+
+      - task: ArchiveFiles@2
+        displayName: "Archive"
+        inputs:
+          includeRootFolder: false
+          rootFolderOrFile: "${{ parameters.package }}/dist"
+          archiveFile: "$(Build.ArtifactStagingDirectory)/WebUI-${{ parameters.package }}-$(Build.BuildId).zip"
+          condition: and(succeeded(), ${{ eq(parameters.isPr, false) }})
+
+      - task: PublishPipelineArtifact@1
+        displayName: "Publish Artifact to Devops"
+        inputs:
+          targetPath: "$(Build.ArtifactStagingDirectory)/WebUI-${{ parameters.package }}-$(Build.BuildId).zip"
+          artifact: WebUI-${{ parameters.package }}
+          condition: and(succeeded(), ${{ eq(parameters.isPr, false) }})
+
+  - job: Publish_Infra
+    displayName: "Publish Infra Files"
+    condition: ${{ eq(parameters.isPr, false) }}
+    steps:
+    - publish: "$(Build.SourcesDirectory)/devops/terraform"
+      displayName: "Publish TF Files"
+      artifact: "TF-Files"
+
